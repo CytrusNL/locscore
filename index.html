@@ -11,7 +11,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
+html,body{heidapi10fcfc7931a19cbf03e61f32a28281d8ght:100%}
 body{font-family:"Inter",sans-serif;background:#f7f5f0;color:#1a1916;height:100vh;max-height:100vh;display:flex;flex-direction:column;overflow:hidden}
 :root{
   --black:#0a0a0a;--charcoal:#1c1c1c;--border:#2e2e2e;
@@ -156,10 +156,6 @@ footer{background:var(--black);border-top:1px solid var(--border);height:32px;di
 .ai-score-row{display:flex;align-items:center;gap:8px}
 .ai-score-badge{background:var(--yellow);color:#0a0a0a;font-family:"DM Mono",monospace;font-size:12px;font-weight:700;padding:3px 10px;border-radius:4px}
 .ai-score-label{font-size:10px;color:#6b6860;font-family:"DM Mono",monospace}
-/* logging status dot */
-.log-dot{width:6px;height:6px;border-radius:50%;background:var(--muted-light);display:inline-block;margin-left:6px;transition:background .3s;vertical-align:middle}
-.log-dot.ok{background:#16a34a}
-.log-dot.err{background:#dc2626}
 @keyframes aipulse{0%,100%{opacity:1}50%{opacity:.5}}
 </style>
 </head>
@@ -226,7 +222,7 @@ footer{background:var(--black);border-top:1px solid var(--border);height:32px;di
           <div class="s-addr" id="s-addr"></div>
           <div class="s-bar-out"><div class="s-bar-in" id="s-bar" style="width:0%"></div></div>
         </div>
-        <div class="sec-title">Categorieen <span id="loading-spin" style="display:none"><div class="spin"></div></span><span id="log-dot" class="log-dot" title="Unity Catalog logging"></span></div>
+        <div class="sec-title">Categorieen <span id="loading-spin" style="display:none"><div class="spin"></div></span></div>
         <div class="cat-list" id="cat-list"><div class="empty">Geen locatie geselecteerd</div></div>
         <div class="divider"></div>
         <div class="sec-title">Gewichten</div>
@@ -508,7 +504,6 @@ function recalc(){
   document.getElementById('s-bar').style.width=tot+'%';
   document.getElementById('save-btn').disabled=false;
   document.getElementById('ai-btn').disabled=false;
-  logToUnityCatalog(0);
   cats.forEach(function(c){
     var se=document.getElementById('cs-'+c.id),be=document.getElementById('cb-'+c.id);
     if(se&&be){var s=curScores[c.id]||0;se.textContent=s;se.style.color=sCol(s);be.style.width=s+'%';be.style.background=sCol(s)}
@@ -647,7 +642,7 @@ function toggleSidebar(){
 }
 
 
-// ── AI OPTIMAL LOCATION (pure client-side) ──────────────────────────────
+// ── AI OPTIMAL LOCATION (pure client-side, geen externe calls) ───────────
 var aiMarker=null, lastAILat=null, lastAILon=null;
 
 function findOptimalLocation(){
@@ -743,62 +738,6 @@ function jumpToAI(){
 }
 
 document.getElementById('ai-btn').addEventListener('click',findOptimalLocation);
-
-// ── UNITY CATALOG LOGGING ─────────────────────────────────────────────────
-function logToUnityCatalog(overrideAiScore){
-  var lat=window._storedLat, lon=window._storedLon;
-  if(!lat||!lon) return;
-
-  var totalScore=parseInt(document.getElementById('s-num').textContent)||0;
-  var grade=document.getElementById('s-grade').textContent||'';
-  var addr=document.getElementById('s-addr').textContent||'';
-
-  var payload={
-    id: (typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():Date.now().toString(36),
-    timestamp: new Date().toISOString(),
-    lat: lat,
-    lon: lon,
-    address: addr,
-    radius: window._storedRadius||searchRadius,
-    total_score: totalScore,
-    grade: grade,
-    ai_lat: lastAILat||0,
-    ai_lon: lastAILon||0,
-    ai_score: overrideAiScore||0,
-    cat_supermarket:  curScores['supermarket']  ||0,
-    cat_transit:      curScores['transit']       ||0,
-    cat_health:       curScores['health']        ||0,
-    cat_park:         curScores['park']          ||0,
-    cat_pharmacy:     curScores['pharmacy']      ||0,
-    cat_library:      curScores['library']       ||0,
-    cat_cycling:      curScores['cycling']       ||0,
-    cat_childcare:    curScores['childcare']     ||0,
-    cat_noise:        curScores['noise']         ||0,
-    cat_sports:       curScores['sports']        ||0,
-    cat_otherschools: curScores['otherschools']  ||0,
-    cat_airquality:   curScores['airquality']    ||0,
-    cat_community:    curScores['community']     ||0,
-    nearby_count: document.querySelectorAll('.nb-item').length,
-    user_agent: navigator.userAgent
-  };
-
-  var dot=document.getElementById('log-dot');
-
-  fetch('/.netlify/functions/log-score',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(payload)
-  })
-  .then(function(r){return r.json()})
-  .then(function(d){
-    if(dot) dot.className='log-dot '+(d.ok?'ok':'err');
-    if(dot) dot.title=d.ok?'Opgeslagen in Unity Catalog ('+d.state+')':'Logging mislukt: '+(d.error||'');
-    setTimeout(function(){if(dot)dot.className='log-dot'},5000);
-  })
-  .catch(function(){
-    if(dot){dot.className='log-dot err';dot.title='Logging mislukt — netwerk fout';}
-  });
-}
 
 // INIT
 buildWeights();renderPropMarkers();renderPropList();
