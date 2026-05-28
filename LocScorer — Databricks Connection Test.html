@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<title>LocScorer — Databricks Connection Test</title>
+<style>
+  body{font-family:monospace;background:#0a0a0a;color:#e8e4dc;padding:40px;max-width:700px;margin:0 auto}
+  h2{color:#e8d832;margin-bottom:20px}
+  .btn{background:#e8d832;color:#0a0a0a;border:none;padding:12px 24px;font-family:monospace;font-size:14px;font-weight:700;cursor:pointer;border-radius:4px;margin-bottom:20px}
+  .btn:hover{background:#f0e850}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  pre{background:#1c1c1c;border:1px solid #2e2e2e;border-radius:6px;padding:16px;white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;min-height:60px}
+  .ok{color:#32c87a}.err{color:#e84032}.pending{color:#e8d832}
+  .label{font-size:11px;color:#6b6860;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}
+</style>
+</head>
+<body>
+<h2>&#10022; Databricks Connection Test</h2>
+<p style="color:#9a9690;font-size:13px;margin-bottom:24px">
+  Open dit bestand op <strong style="color:#e8d832">locscore.cytrus.nl/test-databricks.html</strong><br>
+  zodat de Netlify function bereikbaar is via <code>/.netlify/functions/log-score</code>
+</p>
+
+<button class="btn" id="testBtn" onclick="runTest()">&#9654; Stuur test naar Unity Catalog</button>
+
+<div class="label">Response van Netlify function:</div>
+<pre id="output" class="pending">Nog niet uitgevoerd...</pre>
+
+<div class="label" style="margin-top:16px">Status:</div>
+<pre id="status">—</pre>
+
+<script>
+async function runTest(){
+  var btn = document.getElementById('testBtn');
+  var out = document.getElementById('output');
+  var stat = document.getElementById('status');
+
+  btn.disabled = true;
+  out.className = 'pending';
+  out.textContent = 'Bezig met versturen...';
+  stat.textContent = 'Wachten op Netlify function...';
+
+  var payload = {
+    id: 'test-' + Date.now(),
+    timestamp: new Date().toISOString(),
+    lat: 51.9225, lon: 4.4792,
+    address: 'Test — Rotterdam Centrum',
+    radius: 1000,
+    total_score: 75,
+    grade: 'Goed',
+    ai_lat: 51.9230, ai_lon: 4.4800, ai_score: 78,
+    cat_supermarket: 60, cat_transit: 80, cat_health: 70,
+    cat_park: 65, cat_pharmacy: 50, cat_library: 40,
+    cat_cycling: 90, cat_childcare: 55, cat_noise: 30,
+    cat_sports: 60, cat_otherschools: 45, cat_airquality: 70,
+    cat_community: 65, nearby_count: 8,
+    user_agent: navigator.userAgent
+  };
+
+  stat.textContent = 'Payload: ' + JSON.stringify(payload, null, 2);
+
+  try {
+    var resp = await fetch('/.netlify/functions/log-score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    var text = await resp.text();
+    var data;
+    try { data = JSON.parse(text); } catch(e) { data = { raw: text }; }
+
+    out.className = data.ok ? 'ok' : 'err';
+    out.textContent = JSON.stringify(data, null, 2);
+
+    if(data.ok){
+      stat.textContent = 'SUCCESS — Controleer nu de tabel in Databricks:\nSELECT * FROM cytrus.locscore.location_scores ORDER BY ts DESC LIMIT 5';
+    } else {
+      stat.textContent = 'FOUT — zie response hierboven voor details';
+    }
+
+  } catch(e) {
+    out.className = 'err';
+    out.textContent = 'Fetch error: ' + e.message + '\n\nMogelijke oorzaak: dit bestand lokaal geopend (niet via locscore.cytrus.nl)';
+    stat.textContent = 'Upload dit bestand naar GitHub en open via locscore.cytrus.nl/test-databricks.html';
+  }
+
+  btn.disabled = false;
+}
+</script>
+</body>
+</html>
