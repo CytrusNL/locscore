@@ -29,7 +29,11 @@ exports.handler = async (event) => {
     return {
       statusCode: 500,
       headers: { 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ ok: false, error: 'Missing env vars', host: !!host, token: !!token, warehouse: !!warehouse })
+      body: JSON.stringify({
+        ok: false,
+        error: 'Missing env vars',
+        debug: { host: !!host, token: !!token, warehouse: !!warehouse }
+      })
     };
   }
 
@@ -53,8 +57,6 @@ exports.handler = async (event) => {
   )`;
 
   try {
-    // Submit statement — fire and forget approach
-    // We return ok:true as soon as Databricks accepts the statement
     const resp = await fetch(`${host}/api/2.0/sql/statements`, {
       method: 'POST',
       headers: {
@@ -66,29 +68,32 @@ exports.handler = async (event) => {
         catalog: catalog,
         schema: schema,
         statement: sql,
-        wait_timeout: '0s',        // return immediately with statement_id
-        on_wait_timeout: 'CONTINUE' // keep running async
+        wait_timeout: '0s',
+        on_wait_timeout: 'CONTINUE'
       })
     });
 
-    const result = await resp.json();
-    const statementId = result.statement_id;
-    const state = result?.status?.state;
-    const errorMsg = result?.status?.error?.message || null;
+    const httpStatus = resp.status;
+    const rawText = await resp.text();
 
-    // Any of these states means Databricks accepted it
+    let result;
+    try { result = JSON.parse(rawText); }
+    catch(e) { result = { parse_error: rawText.substring(0, 500) }; }
+
+    const state = result?.status?.state;
     const accepted = ['PENDING', 'RUNNING', 'SUCCEEDED'].includes(state);
 
     return {
-      statusCode: accepted ? 200 : 500,
+      statusCode: 200,
       headers: { 'Access-Control-Allow-Origin': '*' },
       body: JSON.stringify({
         ok: accepted,
-        state: state,
-        statement_id: statementId,
-        error: errorMsg,
-        note: accepted ? 'INSERT accepted by Databricks — runs async' : 'Databricks rejected the statement',
-        sql_preview: sql.substring(0, 300)
+        http_status: httpStatus,
+        state: state || 'UNKNOWN',
+        statement_id: result.statement_id || null,
+        error_code: result?.status?.error?.error_code || null,
+        error_message: result?.status?.error?.message || null,
+        full_response: result
       })
     };
 
@@ -96,7 +101,7 @@ exports.handler = async (event) => {
     return {
       statusCode: 500,
       headers: { 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ ok: false, error: err.message })
+      body: JSON.stringify({ ok: false, error: err.message, stack: err.stack })
     };
   }
 };
