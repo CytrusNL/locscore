@@ -142,6 +142,23 @@ header{background:var(--black);border-bottom:1px solid var(--border);padding:0 2
 footer{background:var(--black);border-top:1px solid var(--border);height:32px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;flex-shrink:0;z-index:1000}
 .ft-copy{font-size:10px;color:var(--muted-light);font-family:"DM Mono",monospace}
 .ft-tag{background:var(--charcoal);border:1px solid var(--border);border-radius:3px;padding:1px 6px;font-size:9px;font-family:"DM Mono",monospace;color:var(--muted-light)}
+
+/* AI OPTIMAL LOCATION */
+.ai-btn{width:100%;padding:10px;background:var(--black);color:var(--yellow);border:1px solid var(--yellow);border-radius:8px;font-family:"Space Grotesk",sans-serif;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s;letter-spacing:.3px;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:6px}
+.ai-btn:hover{background:var(--yellow);color:var(--black)}
+.ai-btn:disabled{opacity:.3;cursor:not-allowed;border-color:var(--border-light);color:var(--muted)}
+.ai-result{background:var(--black);border:1px solid var(--yellow);border-radius:10px;padding:14px;margin-bottom:12px;animation:fadeIn .4s ease;display:none}
+.ai-result.visible{display:block}
+.ai-result-title{font-family:"DM Mono",monospace;font-size:9px;font-weight:600;color:var(--yellow);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.ai-coords{font-family:"DM Mono",monospace;font-size:14px;font-weight:600;color:#fff;margin-bottom:8px;cursor:pointer;transition:color .2s;line-height:1.4}
+.ai-coords:hover{color:var(--yellow)}
+.ai-reasoning{font-size:11px;color:#9a9690;font-family:"DM Mono",monospace;line-height:1.7;margin-bottom:10px}
+.ai-score-row{display:flex;align-items:center;gap:8px}
+.ai-score-badge{background:var(--yellow);color:#0a0a0a;font-family:"DM Mono",monospace;font-size:12px;font-weight:700;padding:3px 10px;border-radius:4px}
+.ai-score-label{font-size:10px;color:#6b6860;font-family:"DM Mono",monospace}
+.ai-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(232,216,50,.25);border-top-color:var(--yellow);border-radius:50%;animation:aisp .7s linear infinite}
+@keyframes aisp{to{transform:rotate(360deg)}}
+@keyframes aipulse{0%,100%{opacity:1}50%{opacity:.5}}
 </style>
 </head>
 <body>
@@ -216,6 +233,21 @@ footer{background:var(--black);border-top:1px solid var(--border);height:32px;di
         <div class="sec-title">Dichtstbijzijnde voorzieningen</div>
         <div id="nearby-list" style="margin-bottom:12px"><div class="empty" style="padding:6px 0">Selecteer eerst een locatie</div></div>
         <button class="cyt-btn" id="save-btn" disabled style="margin-bottom:6px">Locatie opslaan</button>
+
+        <button class="ai-btn" id="ai-btn" disabled>
+          <span id="ai-btn-icon">✦</span>
+          <span id="ai-btn-label">Vind optimale locatie in radius</span>
+        </button>
+
+        <div class="ai-result" id="ai-result">
+          <div class="ai-result-title"><span>✦</span> AI Aanbeveling</div>
+          <div class="ai-coords" id="ai-coords" onclick="jumpToAI()" title="Klik om naar locatie te gaan"></div>
+          <div class="ai-reasoning" id="ai-reasoning"></div>
+          <div class="ai-score-row">
+            <span class="ai-score-badge" id="ai-score-badge">-</span>
+            <span class="ai-score-label">verwachte geschiktheidsscore</span>
+          </div>
+        </div>
       </div>
 
       <!-- OBJECTEN TAB -->
@@ -473,6 +505,7 @@ function recalc(){
   var ge=document.getElementById('s-grade');ge.textContent=g.lbl;ge.style.background=g.bg;ge.style.color=g.col;
   document.getElementById('s-bar').style.width=tot+'%';
   document.getElementById('save-btn').disabled=false;
+  document.getElementById('ai-btn').disabled=false;
   cats.forEach(function(c){
     var se=document.getElementById('cs-'+c.id),be=document.getElementById('cb-'+c.id);
     if(se&&be){var s=curScores[c.id]||0;se.textContent=s;se.style.color=sCol(s);be.style.width=s+'%';be.style.background=sCol(s)}
@@ -605,6 +638,142 @@ function toggleSidebar(){
   btn.title=collapsed?'Zijpaneel openen':'Zijpaneel sluiten';
   setTimeout(function(){map.invalidateSize();},320);
 }
+
+
+// ── AI OPTIMAL LOCATION ──────────────────────────────────────────────────
+var aiMarker=null, aiRunning=false, lastAILat=null, lastAILon=null;
+
+async function findOptimalLocation(){
+  if(aiRunning||!curMarker) return;
+  aiRunning=true;
+
+  var btn=document.getElementById('ai-btn');
+  var icon=document.getElementById('ai-btn-icon');
+  var lbl=document.getElementById('ai-btn-label');
+  btn.disabled=true;
+  icon.innerHTML='<div class="ai-spin"></div>';
+  lbl.textContent='AI analyseert kandidaatlocaties...';
+  document.getElementById('ai-result').classList.remove('visible');
+
+  var ll=curMarker.getLatLng();
+  var lat=ll.lat, lon=ll.lng;
+
+  // Build 3x3 grid of candidates within radius
+  var degLat=searchRadius/111320;
+  var degLon=searchRadius/(111320*Math.cos(lat*Math.PI/180));
+  var candidates=[];
+  for(var r=0;r<3;r++) for(var c=0;c<3;c++)
+    candidates.push({lat:lat+(r-1)*degLat*0.65, lon:lon+(c-1)*degLon*0.65});
+  candidates.push({lat:lat,lon:lon}); // center too
+
+  // Score each candidate via OSM
+  var scored=[];
+  var sr=Math.round(searchRadius*0.65);
+
+  for(var i=0;i<candidates.length;i+=3){
+    var batch=candidates.slice(i,i+3);
+    await Promise.all(batch.map(async function(pt){
+      try{
+        var parts=[];
+        cats.forEach(function(c){c.tags.forEach(function(kv){
+          parts.push('node["'+kv[0]+'"="'+kv[1]+'"](around:'+sr+','+pt.lat+','+pt.lon+');');
+          parts.push('way["'+kv[0]+'"="'+kv[1]+'"](around:'+sr+','+pt.lat+','+pt.lon+');');
+        })});
+        var q='[out:json][timeout:20];\n(\n'+parts.join('\n')+'\n);\nout ids 200;';
+        var els=[];
+        for(var mi=0;mi<MIRRORS.length;mi++){
+          try{
+            var res=await fetch(MIRRORS[mi],{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q)});
+            if(!res.ok) throw new Error('');
+            var d=await res.json(); els=d.elements||[]; break;
+          }catch(e2){}
+        }
+        var tw=0,ws=0;
+        cats.forEach(function(c){
+          var cnt=els.filter(function(e){return c.m(e)}).length;
+          var s=toScore(c.id,cnt,c.inv);
+          ws+=s*W[c.id]; tw+=W[c.id];
+        });
+        scored.push({lat:pt.lat,lon:pt.lon,score:Math.round(ws/tw)});
+      }catch(e){ scored.push({lat:pt.lat,lon:pt.lon,score:0}); }
+    }));
+    await new Promise(function(r){setTimeout(r,80)});
+  }
+
+  scored.sort(function(a,b){return b.score-a.score});
+  var best=scored[0];
+  lastAILat=best.lat; lastAILon=best.lon;
+
+  // Call Claude for reasoning
+  lbl.textContent='AI genereert onderbouwing...';
+
+  var topCats=cats
+    .filter(function(c){return !c.inv})
+    .map(function(c){return{lbl:c.lbl,icon:c.icon,score:curScores[c.id]||0}})
+    .sort(function(a,b){return b.score-a.score})
+    .slice(0,4);
+
+  var prompt='Je bent een locatieadviseur voor publieke sector projecten in Rotterdam. '
+    +'Een gebruiker analyseerde locatie '+lat.toFixed(4)+'N, '+lon.toFixed(4)+'E met een zoekradius van '+searchRadius+'m. '
+    +'Het AI-systeem analyseerde '+scored.length+' kandidaatlocaties en vond het optimum op '
+    +best.lat.toFixed(5)+'N, '+best.lon.toFixed(5)+'E met een geschiktheidsscore van '+best.score+'/100. '
+    +'Sterkste categorieën: '+topCats.map(function(c){return c.lbl+' ('+c.score+'/100)'}).join(', ')+'. '
+    +'Leg in 2-3 bondige zinnen uit waarom dit de beste locatie is voor een schoolgebouw. Wees specifiek. Antwoord in het Nederlands.';
+
+  var reasoning='';
+  try{
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:200,
+        messages:[{role:'user',content:prompt}]
+      })
+    });
+    var data=await resp.json();
+    reasoning=(data.content&&data.content[0]&&data.content[0].text)||'';
+  }catch(e){
+    reasoning='Score '+best.score+'/100 op basis van '+scored.length+' geanalyseerde locaties binnen de zoekradius van '+searchRadius+'m.';
+  }
+
+  // Show result panel
+  document.getElementById('ai-coords').textContent=best.lat.toFixed(5)+' N,  '+best.lon.toFixed(5)+' E';
+  document.getElementById('ai-reasoning').textContent=reasoning;
+  document.getElementById('ai-score-badge').textContent=best.score+'/100';
+  document.getElementById('ai-result').classList.add('visible');
+
+  // Place glowing AI marker on map
+  if(aiMarker) map.removeLayer(aiMarker);
+  aiMarker=L.marker([best.lat,best.lon],{
+    icon:L.divIcon({
+      className:'',
+      html:'<div style="animation:aipulse 2s ease-in-out infinite;display:flex;flex-direction:column;align-items:center">'
+        +'<div style="width:26px;height:26px;border-radius:50%;background:#e8d832;border:3px solid #0a0a0a;'
+        +'box-shadow:0 0 18px #e8d83290;display:flex;align-items:center;justify-content:center;'
+        +'font-size:13px;color:#0a0a0a;font-weight:900">✦</div>'
+        +'<div style="margin-top:3px;background:#e8d832;color:#0a0a0a;font-family:monospace;font-size:9px;'
+        +'padding:2px 6px;border-radius:3px;font-weight:700;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.4)">'
+        +best.score+'/100</div></div>',
+      iconSize:[26,42],iconAnchor:[13,13]
+    }),
+    zIndexOffset:1500
+  }).addTo(map);
+  aiMarker.bindTooltip('✦ AI Optimum — Score: '+best.score+'/100',{direction:'top'});
+
+  aiRunning=false;
+  btn.disabled=false;
+  icon.textContent='✦';
+  lbl.textContent='Vernieuw AI aanbeveling';
+}
+
+function jumpToAI(){
+  if(!lastAILat) return;
+  map.setView([lastAILat,lastAILon],16);
+  switchTab('score');
+}
+
+document.getElementById('ai-btn').addEventListener('click',findOptimalLocation);
 
 // INIT
 buildWeights();renderPropMarkers();renderPropList();
