@@ -240,10 +240,14 @@ footer{background:var(--black);border-top:1px solid var(--border);height:32px;di
         <div class="ai-result" id="ai-result">
           <div class="ai-result-title"><span>&#10022;</span> AI Aanbeveling</div>
           <div class="ai-coords" id="ai-coords" onclick="jumpToAI()" title="Klik om naar locatie te navigeren"></div>
+          <div id="ai-address" style="font-size:11px;color:var(--yellow);font-family:'DM Mono',monospace;margin-bottom:8px;min-height:14px"></div>
           <div class="ai-reasoning" id="ai-reasoning"></div>
-          <div class="ai-score-row">
-            <span class="ai-score-badge" id="ai-score-badge">-</span>
-            <span class="ai-score-label">verwachte geschiktheidsscore</span>
+          <div class="ai-score-row" style="justify-content:space-between;align-items:center">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="ai-score-badge" id="ai-score-badge">-</span>
+              <span class="ai-score-label">verwachte score</span>
+            </div>
+            <button class="cyt-btn" id="ai-save-btn" style="width:auto;padding:6px 14px;font-size:11px;margin-bottom:0;opacity:.4;cursor:not-allowed" disabled>Opslaan</button>
           </div>
         </div>
       </div>
@@ -619,7 +623,7 @@ function updCmp(){
   g.innerHTML=saved.map(function(loc,i){
     var gr=grade(loc.score);
     return '<div class="cmp-card" onclick="jmpTo('+i+')">'+
-      '<div style="font-size:11px;color:var(--muted);font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+loc.lbl+'</div>'+
+      '<div style="font-size:10px;color:var(--muted);font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(loc.isAI?'<span style="color:#e8d832">✦ AI </span>':'')+loc.lbl+'</div>'+
       '<div style="font-family:Space Grotesk,sans-serif;font-size:22px;font-weight:700;color:'+sCol(loc.score)+'">'+loc.score+'</div>'+
       '<div style="font-size:11px;color:var(--muted);font-family:monospace">'+gr.lbl+'</div>'+
       (loc.price?'<div style="font-size:11px;color:#16a34a;font-family:monospace;margin-top:2px">'+loc.price+'</div>':'')+
@@ -714,6 +718,37 @@ function findOptimalLocation(){
   document.getElementById('ai-result').classList.add('visible');
   document.getElementById('ai-btn-label').textContent='Vernieuw aanbeveling';
 
+  // Reverse geocode the AI location
+  document.getElementById('ai-address').textContent='Adres ophalen...';
+  fetch('https://nominatim.openstreetmap.org/reverse?lat='+best.lat+'&lon='+best.lon+'&format=json&addressdetails=1', {
+    headers: { 'Accept-Language': 'nl', 'User-Agent': 'LocScorer/1.0' }
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    var a = d.address || {};
+    var parts = [];
+    if(a.road) parts.push(a.road + (a.house_number ? ' ' + a.house_number : ''));
+    if(a.suburb || a.city_district) parts.push(a.suburb || a.city_district);
+    if(a.city || a.town) parts.push(a.city || a.town);
+    var addr = parts.join(', ') || d.display_name || '';
+    window._aiAddress = addr;
+    document.getElementById('ai-address').textContent = addr;
+    var saveBtn = document.getElementById('ai-save-btn');
+    saveBtn.disabled = false;
+    saveBtn.style.opacity = '1';
+    saveBtn.style.cursor = 'pointer';
+  })
+  .catch(function(){
+    window._aiAddress = best.lat.toFixed(5)+' N, '+best.lon.toFixed(5)+' E';
+    document.getElementById('ai-address').textContent = window._aiAddress;
+    var saveBtn = document.getElementById('ai-save-btn');
+    saveBtn.disabled = false;
+    saveBtn.style.opacity = '1';
+    saveBtn.style.cursor = 'pointer';
+  });
+
+  window._aiBest = best;
+
   if(aiMarker) map.removeLayer(aiMarker);
   aiMarker=L.marker([best.lat,best.lon],{
     icon:L.divIcon({
@@ -736,6 +771,17 @@ function jumpToAI(){
   if(!lastAILat) return;
   map.setView([lastAILat,lastAILon],16);
 }
+
+document.getElementById('ai-save-btn').addEventListener('click',function(){
+  if(!window._aiBest) return;
+  var best = window._aiBest;
+  var score = best.score;
+  var addr = window._aiAddress || (best.lat.toFixed(5)+' N, '+best.lon.toFixed(5)+' E');
+  var lbl = addr.split(',')[0] || ('AI Locatie '+(saved.length+1));
+  saved.push({lat:best.lat, lon:best.lon, score:score, lbl:lbl, price:null, isAI:true});
+  updCmp();
+  switchTab('compare');
+});
 
 document.getElementById('ai-btn').addEventListener('click',findOptimalLocation);
 
