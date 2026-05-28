@@ -156,8 +156,6 @@ footer{background:var(--black);border-top:1px solid var(--border);height:32px;di
 .ai-score-row{display:flex;align-items:center;gap:8px}
 .ai-score-badge{background:var(--yellow);color:#0a0a0a;font-family:"DM Mono",monospace;font-size:12px;font-weight:700;padding:3px 10px;border-radius:4px}
 .ai-score-label{font-size:10px;color:#6b6860;font-family:"DM Mono",monospace}
-.ai-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(232,216,50,.25);border-top-color:var(--yellow);border-radius:50%;animation:aisp .7s linear infinite}
-@keyframes aisp{to{transform:rotate(360deg)}}
 @keyframes aipulse{0%,100%{opacity:1}50%{opacity:.5}}
 </style>
 </head>
@@ -235,13 +233,13 @@ footer{background:var(--black);border-top:1px solid var(--border);height:32px;di
         <button class="cyt-btn" id="save-btn" disabled style="margin-bottom:6px">Locatie opslaan</button>
 
         <button class="ai-btn" id="ai-btn" disabled>
-          <span id="ai-btn-icon">✦</span>
+          <span>✦</span>
           <span id="ai-btn-label">Vind optimale locatie in radius</span>
         </button>
 
         <div class="ai-result" id="ai-result">
           <div class="ai-result-title"><span>✦</span> AI Aanbeveling</div>
-          <div class="ai-coords" id="ai-coords" onclick="jumpToAI()" title="Klik om naar locatie te gaan"></div>
+          <div class="ai-coords" id="ai-coords" onclick="jumpToAI()" title="Klik om naar locatie te navigeren"></div>
           <div class="ai-reasoning" id="ai-reasoning"></div>
           <div class="ai-score-row">
             <span class="ai-score-badge" id="ai-score-badge">-</span>
@@ -555,9 +553,14 @@ async function analyze(lat,lon,addrLbl){
   nbMarkers.forEach(function(m){map.removeLayer(m)});nbMarkers=[];
   if(radCircle)map.removeLayer(radCircle);
   radCircle=L.circle([lat,lon],{radius:radius,color:'#e8d832',weight:1.5,fillColor:'#e8d832',fillOpacity:.05,dashArray:'5 5'}).addTo(map);
-  var nbi=[];curScores={};
+  var nbi=[];curScores={};var _lastEls=[];
   try{
     var els=await fetchOSM(lat,lon,radius);
+    _lastEls=els;
+    window._storedEls=els;
+    window._storedLat=lat;
+    window._storedLon=lon;
+    window._storedRadius=radius;
     cats.forEach(function(c){
       var mt=els.filter(function(e){return c.m(e)});
       curScores[c.id]=toScore(c.id,mt.length,c.inv);
@@ -640,137 +643,116 @@ function toggleSidebar(){
 }
 
 
-// ── AI OPTIMAL LOCATION ──────────────────────────────────────────────────
-var aiMarker=null, aiRunning=false, lastAILat=null, lastAILon=null;
+// ── AI OPTIMAL LOCATION (pure client-side) ──────────────────────────────
+var aiMarker=null, lastAILat=null, lastAILon=null;
 
-async function findOptimalLocation(){
-  if(aiRunning||!curMarker) return;
-  aiRunning=true;
+function findOptimalLocation(){
+  if(!curMarker) return;
 
-  var btn=document.getElementById('ai-btn');
-  var icon=document.getElementById('ai-btn-icon');
-  var lbl=document.getElementById('ai-btn-label');
-  btn.disabled=true;
-  icon.innerHTML='<div class="ai-spin"></div>';
-  lbl.textContent='AI analyseert kandidaatlocaties...';
-  document.getElementById('ai-result').classList.remove('visible');
+  var lat=window._storedLat, lon=window._storedLon;
+  var radius=window._storedRadius||searchRadius;
+  var els=window._storedEls||[];
 
-  var ll=curMarker.getLatLng();
-  var lat=ll.lat, lon=ll.lng;
+  if(!lat||!lon){ return; }
 
-  // Build 3x3 grid of candidates within radius
-  var degLat=searchRadius/111320;
-  var degLon=searchRadius/(111320*Math.cos(lat*Math.PI/180));
+  // Build candidate grid 5x5 within radius
+  var degLat=radius/111320;
+  var degLon=radius/(111320*Math.cos(lat*Math.PI/180));
   var candidates=[];
-  for(var r=0;r<3;r++) for(var c=0;c<3;c++)
-    candidates.push({lat:lat+(r-1)*degLat*0.65, lon:lon+(c-1)*degLon*0.65});
-  candidates.push({lat:lat,lon:lon}); // center too
+  for(var r=0;r<5;r++) for(var c=0;c<5;c++)
+    candidates.push({
+      lat:lat+(r-2)*degLat*0.45,
+      lon:lon+(c-2)*degLon*0.45
+    });
 
-  // Score each candidate via OSM
-  var scored=[];
-  var sr=Math.round(searchRadius*0.65);
-
-  for(var i=0;i<candidates.length;i+=3){
-    var batch=candidates.slice(i,i+3);
-    await Promise.all(batch.map(async function(pt){
-      try{
-        var parts=[];
-        cats.forEach(function(c){c.tags.forEach(function(kv){
-          parts.push('node["'+kv[0]+'"="'+kv[1]+'"](around:'+sr+','+pt.lat+','+pt.lon+');');
-          parts.push('way["'+kv[0]+'"="'+kv[1]+'"](around:'+sr+','+pt.lat+','+pt.lon+');');
-        })});
-        var q='[out:json][timeout:20];\n(\n'+parts.join('\n')+'\n);\nout ids 200;';
-        var els=[];
-        for(var mi=0;mi<MIRRORS.length;mi++){
-          try{
-            var res=await fetch(MIRRORS[mi],{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q)});
-            if(!res.ok) throw new Error('');
-            var d=await res.json(); els=d.elements||[]; break;
-          }catch(e2){}
-        }
-        var tw=0,ws=0;
-        cats.forEach(function(c){
-          var cnt=els.filter(function(e){return c.m(e)}).length;
-          var s=toScore(c.id,cnt,c.inv);
-          ws+=s*W[c.id]; tw+=W[c.id];
-        });
-        scored.push({lat:pt.lat,lon:pt.lon,score:Math.round(ws/tw)});
-      }catch(e){ scored.push({lat:pt.lat,lon:pt.lon,score:0}); }
-    }));
-    await new Promise(function(r){setTimeout(r,80)});
-  }
+  // For each candidate, estimate score by weighting OSM elements by distance
+  var scored=candidates.map(function(pt){
+    var tw=0,ws=0;
+    cats.forEach(function(cat){
+      // Count elements matching this category within radius of candidate
+      var matched=els.filter(function(e){
+        if(!cat.m(e)) return false;
+        var eLat=e.lat||(e.center&&e.center.lat);
+        var eLon=e.lon||(e.center&&e.center.lon);
+        if(!eLat||!eLon) return false;
+        // Distance from candidate to element
+        var R=6371000;
+        var dL=(eLat-pt.lat)*Math.PI/180;
+        var dO=(eLon-pt.lon)*Math.PI/180;
+        var a=Math.sin(dL/2)*Math.sin(dL/2)+Math.cos(pt.lat*Math.PI/180)*Math.cos(eLat*Math.PI/180)*Math.sin(dO/2)*Math.sin(dO/2);
+        var dist=R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+        return dist<=radius;
+      });
+      var s=toScore(cat.id,matched.length,cat.inv);
+      ws+=s*W[cat.id]; tw+=W[cat.id];
+    });
+    return {lat:pt.lat,lon:pt.lon,score:Math.round(ws/tw)};
+  });
 
   scored.sort(function(a,b){return b.score-a.score});
   var best=scored[0];
   lastAILat=best.lat; lastAILon=best.lon;
 
-  // Call Claude for reasoning
-  lbl.textContent='AI genereert onderbouwing...';
-
+  // Build reasoning from top categories at best location
   var topCats=cats
     .filter(function(c){return !c.inv})
-    .map(function(c){return{lbl:c.lbl,icon:c.icon,score:curScores[c.id]||0}})
+    .map(function(c){
+      var matched=els.filter(function(e){
+        if(!c.m(e)) return false;
+        var eLat=e.lat||(e.center&&e.center.lat);
+        var eLon=e.lon||(e.center&&e.center.lon);
+        if(!eLat||!eLon) return false;
+        var R=6371000;
+        var dL=(eLat-best.lat)*Math.PI/180;
+        var dO=(eLon-best.lon)*Math.PI/180;
+        var a=Math.sin(dL/2)*Math.sin(dL/2)+Math.cos(best.lat*Math.PI/180)*Math.cos(eLat*Math.PI/180)*Math.sin(dO/2)*Math.sin(dO/2);
+        return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))<=radius;
+      }).length;
+      return {lbl:c.lbl,icon:c.icon,cnt:matched,score:toScore(c.id,matched,false)};
+    })
+    .filter(function(c){return c.cnt>0})
     .sort(function(a,b){return b.score-a.score})
-    .slice(0,4);
+    .slice(0,3);
 
-  var prompt='Je bent een locatieadviseur voor publieke sector projecten in Rotterdam. '
-    +'Een gebruiker analyseerde locatie '+lat.toFixed(4)+'N, '+lon.toFixed(4)+'E met een zoekradius van '+searchRadius+'m. '
-    +'Het AI-systeem analyseerde '+scored.length+' kandidaatlocaties en vond het optimum op '
-    +best.lat.toFixed(5)+'N, '+best.lon.toFixed(5)+'E met een geschiktheidsscore van '+best.score+'/100. '
-    +'Sterkste categorieën: '+topCats.map(function(c){return c.lbl+' ('+c.score+'/100)'}).join(', ')+'. '
-    +'Leg in 2-3 bondige zinnen uit waarom dit de beste locatie is voor een schoolgebouw. Wees specifiek. Antwoord in het Nederlands.';
-
-  var reasoning='';
-  try{
-    var resp=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',
-        max_tokens:200,
-        messages:[{role:'user',content:prompt}]
-      })
-    });
-    var data=await resp.json();
-    reasoning=(data.content&&data.content[0]&&data.content[0].text)||'';
-  }catch(e){
-    reasoning='Score '+best.score+'/100 op basis van '+scored.length+' geanalyseerde locaties binnen de zoekradius van '+searchRadius+'m.';
+  var reason='';
+  if(topCats.length){
+    var parts=topCats.map(function(c){return c.icon+' '+c.cnt+' '+c.lbl.toLowerCase()});
+    reason='Optimale positie op basis van '+scored.length+' geanalyseerde punten. '
+      +'Sterkste factoren nabij dit punt: '+parts.join(', ')+'. '
+      +'Score '+best.score+'/100 — '+(best.score>=70?'uitstekend geschikt':best.score>=50?'goed geschikt':'matig geschikt')+' voor schoolvestiging.';
+  } else {
+    reason='Score '+best.score+'/100 op basis van '+scored.length+' kandidaatpunten binnen '+radius+'m zoekradius.';
   }
 
-  // Show result panel
+  // Update UI
   document.getElementById('ai-coords').textContent=best.lat.toFixed(5)+' N,  '+best.lon.toFixed(5)+' E';
-  document.getElementById('ai-reasoning').textContent=reasoning;
+  document.getElementById('ai-reasoning').textContent=reason;
   document.getElementById('ai-score-badge').textContent=best.score+'/100';
   document.getElementById('ai-result').classList.add('visible');
+  document.getElementById('ai-btn-label').textContent='Vernieuw aanbeveling';
 
-  // Place glowing AI marker on map
+  // Place AI marker
   if(aiMarker) map.removeLayer(aiMarker);
   aiMarker=L.marker([best.lat,best.lon],{
     icon:L.divIcon({
       className:'',
       html:'<div style="animation:aipulse 2s ease-in-out infinite;display:flex;flex-direction:column;align-items:center">'
         +'<div style="width:26px;height:26px;border-radius:50%;background:#e8d832;border:3px solid #0a0a0a;'
-        +'box-shadow:0 0 18px #e8d83290;display:flex;align-items:center;justify-content:center;'
-        +'font-size:13px;color:#0a0a0a;font-weight:900">✦</div>'
+        +'box-shadow:0 0 16px rgba(232,216,50,.6);display:flex;align-items:center;justify-content:center;'
+        +'font-size:13px;color:#0a0a0a;font-weight:900">&#10022;</div>'
         +'<div style="margin-top:3px;background:#e8d832;color:#0a0a0a;font-family:monospace;font-size:9px;'
-        +'padding:2px 6px;border-radius:3px;font-weight:700;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.4)">'
+        +'padding:2px 6px;border-radius:3px;font-weight:700;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.4)">'
         +best.score+'/100</div></div>',
       iconSize:[26,42],iconAnchor:[13,13]
     }),
     zIndexOffset:1500
   }).addTo(map);
-  aiMarker.bindTooltip('✦ AI Optimum — Score: '+best.score+'/100',{direction:'top'});
-
-  aiRunning=false;
-  btn.disabled=false;
-  icon.textContent='✦';
-  lbl.textContent='Vernieuw AI aanbeveling';
+  aiMarker.bindTooltip('&#10022; AI Optimum — Score: '+best.score+'/100',{direction:'top'});
 }
 
 function jumpToAI(){
   if(!lastAILat) return;
   map.setView([lastAILat,lastAILon],16);
-  switchTab('score');
 }
 
 document.getElementById('ai-btn').addEventListener('click',findOptimalLocation);
