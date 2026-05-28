@@ -156,6 +156,10 @@ footer{background:var(--black);border-top:1px solid var(--border);height:32px;di
 .ai-score-row{display:flex;align-items:center;gap:8px}
 .ai-score-badge{background:var(--yellow);color:#0a0a0a;font-family:"DM Mono",monospace;font-size:12px;font-weight:700;padding:3px 10px;border-radius:4px}
 .ai-score-label{font-size:10px;color:#6b6860;font-family:"DM Mono",monospace}
+/* logging status dot */
+.log-dot{width:6px;height:6px;border-radius:50%;background:var(--muted-light);display:inline-block;margin-left:6px;transition:background .3s;vertical-align:middle}
+.log-dot.ok{background:#16a34a}
+.log-dot.err{background:#dc2626}
 @keyframes aipulse{0%,100%{opacity:1}50%{opacity:.5}}
 </style>
 </head>
@@ -222,7 +226,7 @@ footer{background:var(--black);border-top:1px solid var(--border);height:32px;di
           <div class="s-addr" id="s-addr"></div>
           <div class="s-bar-out"><div class="s-bar-in" id="s-bar" style="width:0%"></div></div>
         </div>
-        <div class="sec-title">Categorieen <span id="loading-spin" style="display:none"><div class="spin"></div></span></div>
+        <div class="sec-title">Categorieen <span id="loading-spin" style="display:none"><div class="spin"></div></span><span id="log-dot" class="log-dot" title="Unity Catalog logging"></span></div>
         <div class="cat-list" id="cat-list"><div class="empty">Geen locatie geselecteerd</div></div>
         <div class="divider"></div>
         <div class="sec-title">Gewichten</div>
@@ -233,12 +237,12 @@ footer{background:var(--black);border-top:1px solid var(--border);height:32px;di
         <button class="cyt-btn" id="save-btn" disabled style="margin-bottom:6px">Locatie opslaan</button>
 
         <button class="ai-btn" id="ai-btn" disabled>
-          <span>✦</span>
+          <span>&#10022;</span>
           <span id="ai-btn-label">Vind optimale locatie in radius</span>
         </button>
 
         <div class="ai-result" id="ai-result">
-          <div class="ai-result-title"><span>✦</span> AI Aanbeveling</div>
+          <div class="ai-result-title"><span>&#10022;</span> AI Aanbeveling</div>
           <div class="ai-coords" id="ai-coords" onclick="jumpToAI()" title="Klik om naar locatie te navigeren"></div>
           <div class="ai-reasoning" id="ai-reasoning"></div>
           <div class="ai-score-row">
@@ -504,6 +508,7 @@ function recalc(){
   document.getElementById('s-bar').style.width=tot+'%';
   document.getElementById('save-btn').disabled=false;
   document.getElementById('ai-btn').disabled=false;
+  logToUnityCatalog(0);
   cats.forEach(function(c){
     var se=document.getElementById('cs-'+c.id),be=document.getElementById('cb-'+c.id);
     if(se&&be){var s=curScores[c.id]||0;se.textContent=s;se.style.color=sCol(s);be.style.width=s+'%';be.style.background=sCol(s)}
@@ -553,10 +558,9 @@ async function analyze(lat,lon,addrLbl){
   nbMarkers.forEach(function(m){map.removeLayer(m)});nbMarkers=[];
   if(radCircle)map.removeLayer(radCircle);
   radCircle=L.circle([lat,lon],{radius:radius,color:'#e8d832',weight:1.5,fillColor:'#e8d832',fillOpacity:.05,dashArray:'5 5'}).addTo(map);
-  var nbi=[];curScores={};var _lastEls=[];
+  var nbi=[];curScores={};window._storedEls=[];window._storedLat=lat;window._storedLon=lon;window._storedRadius=radius;
   try{
     var els=await fetchOSM(lat,lon,radius);
-    _lastEls=els;
     window._storedEls=els;
     window._storedLat=lat;
     window._storedLon=lon;
@@ -648,42 +652,30 @@ var aiMarker=null, lastAILat=null, lastAILon=null;
 
 function findOptimalLocation(){
   if(!curMarker) return;
-
   var lat=window._storedLat, lon=window._storedLon;
-  var radius=window._storedRadius||searchRadius;
+  var r=window._storedRadius||searchRadius;
   var els=window._storedEls||[];
+  if(!lat||!lon) return;
 
-  if(!lat||!lon){ return; }
-
-  // Build candidate grid 5x5 within radius
-  var degLat=radius/111320;
-  var degLon=radius/(111320*Math.cos(lat*Math.PI/180));
+  var degLat=r/111320;
+  var degLon=r/(111320*Math.cos(lat*Math.PI/180));
   var candidates=[];
-  for(var r=0;r<5;r++) for(var c=0;c<5;c++)
-    candidates.push({
-      lat:lat+(r-2)*degLat*0.45,
-      lon:lon+(c-2)*degLon*0.45
-    });
+  for(var ri=0;ri<5;ri++) for(var ci=0;ci<5;ci++)
+    candidates.push({lat:lat+(ri-2)*degLat*0.45, lon:lon+(ci-2)*degLon*0.45});
 
-  // For each candidate, estimate score by weighting OSM elements by distance
   var scored=candidates.map(function(pt){
     var tw=0,ws=0;
     cats.forEach(function(cat){
-      // Count elements matching this category within radius of candidate
       var matched=els.filter(function(e){
         if(!cat.m(e)) return false;
         var eLat=e.lat||(e.center&&e.center.lat);
         var eLon=e.lon||(e.center&&e.center.lon);
         if(!eLat||!eLon) return false;
-        // Distance from candidate to element
-        var R=6371000;
-        var dL=(eLat-pt.lat)*Math.PI/180;
-        var dO=(eLon-pt.lon)*Math.PI/180;
+        var R=6371000,dL=(eLat-pt.lat)*Math.PI/180,dO=(eLon-pt.lon)*Math.PI/180;
         var a=Math.sin(dL/2)*Math.sin(dL/2)+Math.cos(pt.lat*Math.PI/180)*Math.cos(eLat*Math.PI/180)*Math.sin(dO/2)*Math.sin(dO/2);
-        var dist=R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
-        return dist<=radius;
-      });
-      var s=toScore(cat.id,matched.length,cat.inv);
+        return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))<=r;
+      }).length;
+      var s=toScore(cat.id,matched,cat.inv);
       ws+=s*W[cat.id]; tw+=W[cat.id];
     });
     return {lat:pt.lat,lon:pt.lon,score:Math.round(ws/tw)};
@@ -693,45 +685,40 @@ function findOptimalLocation(){
   var best=scored[0];
   lastAILat=best.lat; lastAILon=best.lon;
 
-  // Build reasoning from top categories at best location
   var topCats=cats
     .filter(function(c){return !c.inv})
     .map(function(c){
-      var matched=els.filter(function(e){
+      var cnt=els.filter(function(e){
         if(!c.m(e)) return false;
         var eLat=e.lat||(e.center&&e.center.lat);
         var eLon=e.lon||(e.center&&e.center.lon);
         if(!eLat||!eLon) return false;
-        var R=6371000;
-        var dL=(eLat-best.lat)*Math.PI/180;
-        var dO=(eLon-best.lon)*Math.PI/180;
+        var R=6371000,dL=(eLat-best.lat)*Math.PI/180,dO=(eLon-best.lon)*Math.PI/180;
         var a=Math.sin(dL/2)*Math.sin(dL/2)+Math.cos(best.lat*Math.PI/180)*Math.cos(eLat*Math.PI/180)*Math.sin(dO/2)*Math.sin(dO/2);
-        return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))<=radius;
+        return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))<=r;
       }).length;
-      return {lbl:c.lbl,icon:c.icon,cnt:matched,score:toScore(c.id,matched,false)};
+      return {lbl:c.lbl,icon:c.icon,cnt:cnt};
     })
     .filter(function(c){return c.cnt>0})
-    .sort(function(a,b){return b.score-a.score})
+    .sort(function(a,b){return b.cnt-a.cnt})
     .slice(0,3);
 
   var reason='';
   if(topCats.length){
     var parts=topCats.map(function(c){return c.icon+' '+c.cnt+' '+c.lbl.toLowerCase()});
     reason='Optimale positie op basis van '+scored.length+' geanalyseerde punten. '
-      +'Sterkste factoren nabij dit punt: '+parts.join(', ')+'. '
+      +'Sterkste factoren: '+parts.join(', ')+'. '
       +'Score '+best.score+'/100 — '+(best.score>=70?'uitstekend geschikt':best.score>=50?'goed geschikt':'matig geschikt')+' voor schoolvestiging.';
   } else {
-    reason='Score '+best.score+'/100 op basis van '+scored.length+' kandidaatpunten binnen '+radius+'m zoekradius.';
+    reason='Score '+best.score+'/100 op basis van '+scored.length+' kandidaatpunten binnen '+r+'m.';
   }
 
-  // Update UI
   document.getElementById('ai-coords').textContent=best.lat.toFixed(5)+' N,  '+best.lon.toFixed(5)+' E';
   document.getElementById('ai-reasoning').textContent=reason;
   document.getElementById('ai-score-badge').textContent=best.score+'/100';
   document.getElementById('ai-result').classList.add('visible');
   document.getElementById('ai-btn-label').textContent='Vernieuw aanbeveling';
 
-  // Place AI marker
   if(aiMarker) map.removeLayer(aiMarker);
   aiMarker=L.marker([best.lat,best.lon],{
     icon:L.divIcon({
@@ -747,7 +734,7 @@ function findOptimalLocation(){
     }),
     zIndexOffset:1500
   }).addTo(map);
-  aiMarker.bindTooltip('&#10022; AI Optimum — Score: '+best.score+'/100',{direction:'top'});
+  aiMarker.bindTooltip('&#10022; AI Optimum: '+best.score+'/100',{direction:'top'});
 }
 
 function jumpToAI(){
@@ -756,6 +743,62 @@ function jumpToAI(){
 }
 
 document.getElementById('ai-btn').addEventListener('click',findOptimalLocation);
+
+// ── UNITY CATALOG LOGGING ─────────────────────────────────────────────────
+function logToUnityCatalog(overrideAiScore){
+  var lat=window._storedLat, lon=window._storedLon;
+  if(!lat||!lon) return;
+
+  var totalScore=parseInt(document.getElementById('s-num').textContent)||0;
+  var grade=document.getElementById('s-grade').textContent||'';
+  var addr=document.getElementById('s-addr').textContent||'';
+
+  var payload={
+    id: (typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():Date.now().toString(36),
+    timestamp: new Date().toISOString(),
+    lat: lat,
+    lon: lon,
+    address: addr,
+    radius: window._storedRadius||searchRadius,
+    total_score: totalScore,
+    grade: grade,
+    ai_lat: lastAILat||0,
+    ai_lon: lastAILon||0,
+    ai_score: overrideAiScore||0,
+    cat_supermarket:  curScores['supermarket']  ||0,
+    cat_transit:      curScores['transit']       ||0,
+    cat_health:       curScores['health']        ||0,
+    cat_park:         curScores['park']          ||0,
+    cat_pharmacy:     curScores['pharmacy']      ||0,
+    cat_library:      curScores['library']       ||0,
+    cat_cycling:      curScores['cycling']       ||0,
+    cat_childcare:    curScores['childcare']     ||0,
+    cat_noise:        curScores['noise']         ||0,
+    cat_sports:       curScores['sports']        ||0,
+    cat_otherschools: curScores['otherschools']  ||0,
+    cat_airquality:   curScores['airquality']    ||0,
+    cat_community:    curScores['community']     ||0,
+    nearby_count: document.querySelectorAll('.nb-item').length,
+    user_agent: navigator.userAgent
+  };
+
+  var dot=document.getElementById('log-dot');
+
+  fetch('/.netlify/functions/log-score',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  })
+  .then(function(r){return r.json()})
+  .then(function(d){
+    if(dot) dot.className='log-dot '+(d.ok?'ok':'err');
+    if(dot) dot.title=d.ok?'Opgeslagen in Unity Catalog ('+d.state+')':'Logging mislukt: '+(d.error||'');
+    setTimeout(function(){if(dot)dot.className='log-dot'},5000);
+  })
+  .catch(function(){
+    if(dot){dot.className='log-dot err';dot.title='Logging mislukt — netwerk fout';}
+  });
+}
 
 // INIT
 buildWeights();renderPropMarkers();renderPropList();
